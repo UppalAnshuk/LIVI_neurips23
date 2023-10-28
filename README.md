@@ -38,7 +38,7 @@ Please refers to the `requirements.txt` file for checking packages and versions.
 The BNNs need to be made with reparameterisable layers. We provide a set of reparameterisable layers in the 
 `bnn_src/layers.py` file. The layers are based on the reparameterisation trick where the generator produces a 
 vector of parameters for the BNN layers. The parameters are samples from the approximate posterior distribution 
-parameterised by the generator and used calculating losses.
+parameterised by the generator and used for calculating losses.
 
 
 #### To use the code-base provided here please follow the following steps:
@@ -46,8 +46,8 @@ parameterised by the generator and used calculating losses.
 2. Decide a generator architecture that takes a base variable and produces a vector of parameters for the BNN layers.
    1. For smaller BNNs, MLP style generators should suffice.
    2. For any BNN over 50K parameters, we recommend using the Matrix Multiplication style generator. See 
-      `bnn_src/models.py` for an examples.
-3. Compose BNN using the reparameterisable layers provided in `bnn_src/layers.py`.
+      `bnn_src/models.py` for an example.
+3. Compose BNN using the reparameterisable layers provided in `bnn_src/layers.py`. The BNN requires a generator for intialisation.
 4. Decide a base distribution for the base variable. We recommend using a Gaussian distribution.
 5. Decide a prior distribution for the BNN parameters. We recommend using a Gaussian distribution.
 6. Compose components from steps 1, 2, 3, and 4 into the `ImplicitBNNs` class in `bnn_src/imp_bnn.py` which also 
@@ -62,6 +62,7 @@ the same workflow as above.
 BNN as that is, currently, the only supported way of training BNNs with implicit posteriors.
 
 ### Large Scale Usage
+The advice below is recommended if the BNN contains over 50K parameters and has been tested for up to 30M parameters.
 Use `CorreMMGenerator` class in `bnn_src/models.py` for large scale BNNs. This class uses a matrix multiplication 
 generator for generating very high dimensional vectors of parameters of a BNN. Please refer to `gen_arch_config` 
 folder to see the architecture of the generators used in the paper.
@@ -69,12 +70,24 @@ folder to see the architecture of the generators used in the paper.
 Please make sure to disable the `--accurate` flag, like in `implicit_train.py` which passes this to `ImplicitBNNs` elbo 
 loss. This will make sure to use the smallest singular value numerical approximation. 
 We provide all the generator architectures used in the paper in `gen_arch_config/` as `.yaml` files. These files contain
-architecture description for the novel Matrix Multiplication generator/hypernetwork proposed in the paper. 
+architecture description for the novel Matrix Multiplication generator/hypernetwork proposed in the paper. Usage described below:
+
+```
+            with open(f'gen_arch_config/config_file_name.yaml', 'r') as cnfg_f:
+                config = yaml.full_load(cnfg_f)
+            input_size, output_size, hidden_units, num_hidden_layers = config
+```
+`input_size` is the size of the matrix sampled from the base distribution, `output_size` needs to specified for each of the 
+matrix multiplication subnetworks (in matrix dimensions). One can either specify this to such that each matrix subnetwork towards
+the end generates parameters for one layer of the BNN or they can all generate the same sized matrix. `hidden_units` are the dimensions
+of the matrix multiplication hidden layer in the individual subnetworks and `num_hidden_layers` specify their number, 1 or 2 is usually
+fine as a higher number results in longer runtimes.
 
 **Note** During experimentation we noticed that down-weighting the gradients from the standard normal prior in the ELBO is
 helpful during training. Specifically, this allows a generator with fewer parameters to achieve good performance and thus
-the ELBO loss functions take two different down-weighing arguments namely `jacobi_down_weight` and `prob_down_weight`, the
-former is multiplied with the entropy term and the latter with the prior log probability. 
+the ELBO loss functions takes two different down-weighing arguments namely `jacobi_down_weight` and `prob_down_weight`, the
+former is multiplied with the entropy term and the latter with the prior log probability.
+
 **ALSO NOTE** The above down-weighing is not the same as cold-posteriors!! We do not scale down the entire KL term as many
 works do,rather we want all the gradient contribution from the entropy term to be able to capture a multimodal posterior 
 and we only down-weigh the prior which is often naively chosen in BDL.
