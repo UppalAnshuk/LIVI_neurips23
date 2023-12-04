@@ -41,10 +41,7 @@ class ImplicitBNNs:
         data_len = pred_data[0].shape[0]
         assert self.likelihood == 'classification', 'function only tested for classification'
         loss_fn = likelihood_loss() #default reduction in the loss is 'mean'
-        # TODO insert an appropriate device check
-        #     if device != 'cpu':
-        #         assert next(bnn.parameters()).device == device, "device inconsistency detected in elbo loss"
-        # base_sample.requires_grad_() #FIXME IS THIS NEEDED HERE?
+                                    
         self.bnn.train()
         base_s, params, weights_to_layers = self.bnn.sample_params(batch_size=n_samples, device=device)
         if isinstance(base_s, list):
@@ -52,19 +49,17 @@ class ImplicitBNNs:
         else:
             base_sample = base_s
         params = params + self.small_noise * tr.randn_like(params)
-        # try a heuristic down weighing of the weights initially to avoid the high likelihood loss/high gradient issue
+
 
         for ns in range(n_samples):  # mean across noise samples.
-            # if tr.abs(params[ns, :].detach()).max() > 3.0:
-            #     weights_to_layers(params[ns, :] / tr.abs(params[ns, :].detach()).max()) #set params inside
-            # else:
-            weights_to_layers(params[ns, :])  # do i need downscaling when the gradients are dying?
+
+            weights_to_layers(params[ns, :])  
             # likelihood loss function is over the whole batch, no normalization w.r.t data points needed
             likelihood_ls = -loss_fn(self.bnn(pred_data[0]), pred_data[1])
             
             single_samp_lb = likelihood_ls - prob_down_weight * tr.sum(self.base_dist.log_prob(base_sample[ns, :])) + \
                              prob_down_weight * tr.sum(self.prior_dist.log_prob(params[ns, :]))
-            # TODO downweigh the entropy of single samp elbo??
+        
             elbo.append(single_samp_lb)
 
         if isinstance(self.bnn.gen_net, list):
@@ -76,17 +71,15 @@ class ImplicitBNNs:
             accurate_jacobi = tr.sum(tr.as_tensor(jacobi_list))
         else:
             accurate_jacobi = self.entropy_lb(self.bnn.gen_net, base_sample=base_sample, device=device,
-                                          singular_value_iter=3, accurate=accurate)
-        # print('value of J^t.J: ',accurate_jacobi.item())
-        # down weight the accurate jacobi term. accurate jacobi increases with iterations why? Do we need more
-        # regularisation? ADDED downweigh by data cardinality
-        mc_estimate_elbo = tr.stack(elbo).mean() + jacobi_down_weight * (accurate_jacobi / data_len)
+                                          singular_value_iter=5, accurate=accurate)
+      
+        mc_estimate_elbo = tr.stack(elbo).mean() + jacobi_down_weight * accurate_jacobi
 
         #   E[log(p(D|G(z))) + log(p(G(z))) - log(p_0(G(z)))] + E[lower_bound(log(q(z)))]
         # elbo is lower bound to ML and needs to increase so the loss reported is the negative of the elbo
         return -mc_estimate_elbo, likelihood_ls.detach(), accurate_jacobi.detach()
 
-    ##training with NLL, can't I just use torch NLL, TODO
+    ##training with NLL
 
     def full_batch_reparam_elbo_nll(self, pred_data: Union[list, tuple], device='cuda:0', n_samples: int = 10,
                                     jacobi_down_weight: float = 0.1, accurate: bool = True, prob_down_weight: float = 1e-2):
@@ -96,28 +89,25 @@ class ImplicitBNNs:
         device = device if tr.cuda.is_available() else "cpu"
         elbo = []
         data_len = pred_data[0].shape[0]
-        # TODO insert an appropriate device check
-        #     if device != 'cpu':
-        #         assert next(bnn.parameters()).device == device, "device inconsistency detected in elbo loss"
-        # base_sample.requires_grad_() #FIXME IS THIS NEEDED HERE?
+
         self.bnn.train()
         base_sample, params, weights_to_layers = self.bnn.sample_params(batch_size=n_samples, device=device)
         params = params + self.small_noise * tr.randn_like(params)
         gaussian_noise_ll = tr.exp(0.5 * self.bnn.ll_log_var) + 1e-8
-        # gaussian_noise_ll = (self.bnn.gen_net.ll_var)**0.5 + 1e-7
+                                        
         for ns in range(n_samples):  # mean across noise samples.
-            weights_to_layers(params[ns, :])  # do i need downscaling when the gradients are dying?
+            weights_to_layers(params[ns, :]) 
             # likelihood loss function is over the whole batch, no normalization w.r.t data points needed
             data_ll = dist.Normal(self.bnn(pred_data[0]), gaussian_noise_ll).log_prob(pred_data[1]).sum()
             single_samp_lb = data_ll - \
                              prob_down_weight * self.base_dist.log_prob(base_sample[ns, :]) + \
                              prob_down_weight * self.prior_dist.log_prob(params[ns, :])
-            # TODO downweigh the entropy of single samp elbo??
+        
             elbo.append(single_samp_lb)
 
         accurate_jacobi = self.entropy_lb(self.bnn.gen_net, base_sample=base_sample, device=device,
                                           singular_value_iter=5, accurate=accurate)
-        # print('value of J^t.J: ',accurate_jacobi.item())
+     
 
         mc_estimate_elbo = tr.stack(elbo).mean() + jacobi_down_weight * (accurate_jacobi)
 
@@ -125,52 +115,7 @@ class ImplicitBNNs:
         # elbo is lower bound to ML and needs to increase so the loss reported is the negative of the elbo
         return -mc_estimate_elbo, data_ll.detach(), accurate_jacobi.detach()
 
-    def full_batch_relbo_cl(self, pred_data: Union[list, tuple], device='cuda:0', n_samples: int = 10,
-                            jacobi_down_weight: float = 0.1,
-                            accurate: bool = True,
-                            prob_down_weight: float = 1e-2):
-
-        assert isinstance(self.prior_dist, SimpleMLP), 'Continual learning only supported for implicit posteriors ' \
-                                                       'using generators'
-        assert self.bnn.likelihood == 'regression', 'This loss function only works for regression'
-        assert n_samples > 0, 'number of samples can be positive non-zero integer'
-        device = device if tr.cuda.is_available() else "cpu"
-        assert accurate, 'right now this only works for accurate jac compuatation'
-        elbo = []
-        data_len = pred_data[0].shape[0]
-
-        # TODO insert an appropriate device check
-        #     if device != 'cpu':
-        #         assert next(bnn.parameters()).device == device, "device inconsistency detected in elbo loss"
-        # base_sample.requires_grad_() #FIXME IS THIS NEEDED HERE?
-        # only forward pass jacobian evals using stochman nnj
-        for p in self.prior_dist.parameters():
-            p.requires_grad = False
-        self.bnn.train()
-        base_sample, params, weights_to_layers = self.bnn.sample_params(batch_size=n_samples, device=device)
-
-        prob_down_weight = prob_down_weight
-        # gaussian_noise_ll = tr.exp(0.5 * self.bnn.gen_net.ll_log_var) + 1e-8
-        gaussian_noise_ll = (self.bnn.gen_net.ll_var) ** 0.5 + 1e-7
-        for ns in range(n_samples):  # mean across noise samples.
-            weights_to_layers(params[ns, :])  # do i need downscaling when the gradients are dying?
-            # likelihood loss function is over the whole batch, no normalization w.r.t data points needed
-            data_ll = dist.Normal(self.bnn(pred_data[0]), gaussian_noise_ll).log_prob(pred_data[1]).sum()
-            single_samp_lb = data_ll - prob_down_weight * self.entropy_lb(self.prior_dist, base_sample, device=device,
-                                                                          singular_value_iter=5, accurate=accurate)
-            # TODO downweigh the entropy of single samp elbo??
-            elbo.append(single_samp_lb)
-
-        accurate_jacobi = self.entropy_lb(self.bnn.gen_net, base_sample=base_sample, device=device,
-                                          singular_value_iter=5, accurate=accurate)
-        # print('value of J^t.J: ',accurate_jacobi.item())
-
-        mc_estimate_elbo = tr.stack(elbo).mean() + jacobi_down_weight * (accurate_jacobi)
-
-        #   E[log(p(D|G(z))) + log(p(G(z))) - log(p_0(G(z)))] + E[lower_bound(log(q(z)))]
-        # elbo is lower bound to ML and needs to increase so the loss reported is the negative of the elbo
-        return -mc_estimate_elbo, data_ll.detach(), accurate_jacobi.detach()
-
+    
     def entropy_lb(self, generator, base_sample, device='cuda:0', singular_value_iter=12, accurate: bool = False):
         # smallest singluar value approximation
         def RaRitz(v, r, p, intermediate, projection, device):
